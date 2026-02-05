@@ -92,8 +92,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle menu button presses."""
+async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle menu button presses. Returns True if handled."""
     text = update.message.text
     
     if text not in menu.MENU_COMMANDS:
@@ -147,11 +147,55 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return True
     
-    # Handle command shortcuts
-    elif action.startswith("/"):
-        # Simulate command by updating the message text
-        update.message.text = action
-        return False  # Let the command handler process it
+    # Handle command shortcuts - call functions directly
+    elif action == "/add":
+        result = await add_reminder_start(update, context)
+        if result is not None:
+            context.user_data["conversation_state"] = "add_reminder"
+            context.user_data["conversation_step"] = result
+        return True
+    
+    elif action == "/list":
+        await list_reminders(update, context)
+        return True
+    
+    elif action == "/delete":
+        result = await delete_reminder_start(update, context)
+        if result is not None and result != ConversationHandler.END:
+            context.user_data["conversation_state"] = "delete_reminder"
+        return True
+    
+    elif action == "/mood":
+        await mh.mood_command(update, context)
+        return True
+    
+    elif action == "/moodstats":
+        await mh.mood_stats_command(update, context)
+        return True
+    
+    elif action == "/breathe":
+        await mh.breathe_command(update, context)
+        return True
+    
+    elif action == "/cbt":
+        await mh.cbt_command(update, context)
+        return True
+    
+    elif action == "/meds":
+        await mh.meds_command(update, context)
+        return True
+    
+    elif action == "/subscription":
+        await sub.subscription_command(update, context)
+        return True
+    
+    elif action == "/timezone":
+        await timezone_command(update, context)
+        return True
+    
+    elif action == "/help":
+        await help_command(update, context)
+        return True
     
     return False
 
@@ -465,6 +509,13 @@ async def handle_ai_reminder_callback(update: Update, context: ContextTypes.DEFA
             parse_mode="Markdown"
         )
         
+        # Send menu
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Що далі?",
+            reply_markup=menu.get_main_menu()
+        )
+        
         # Clean up
         del pending_reminders[user_id]
         
@@ -472,6 +523,11 @@ async def handle_ai_reminder_callback(update: Update, context: ContextTypes.DEFA
         if user_id in pending_reminders:
             del pending_reminders[user_id]
         await query.edit_message_text("❌ Створення нагадування скасовано.")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Що далі?",
+            reply_markup=menu.get_main_menu()
+        )
         
     elif action == "ai_edit_time":
         await query.edit_message_text(
@@ -755,6 +811,13 @@ async def add_reminder_repeat(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="Markdown"
     )
     
+    # Send menu
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Оберіть наступну дію:",
+        reply_markup=menu.get_reminders_menu()
+    )
+    
     # Clear user data
     context.user_data.clear()
     
@@ -766,7 +829,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
         "❌ Дію скасовано.",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=menu.get_main_menu()
     )
     return ConversationHandler.END
 
@@ -775,15 +839,18 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all active reminders for the user."""
     user_id = update.effective_user.id
     reminders = db.get_user_reminders(user_id)
+    limits = db.get_user_limits(user_id)
+    current_count = db.count_user_reminders(user_id)
     
     if not reminders:
         await update.message.reply_text(
             "📭 У вас немає активних нагадувань.\n\n"
-            "Використайте /add щоб створити нове!"
+            "Натисніть «➕ Нове нагадування» щоб створити!",
+            reply_markup=menu.get_reminders_menu()
         )
         return
     
-    message = "📋 *Ваші нагадування:*\n\n"
+    message = f"📋 *Ваші нагадування* ({current_count}/{limits['reminders']}):\n\n"
     
     for reminder in reminders:
         reminder_id, title, reminder_time, repeat_type = reminder
@@ -793,12 +860,13 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message += f"🔹 *{title}*\n"
         message += f"   ⏰ {time_str}\n"
-        message += f"   🔄 {repeat_label}\n"
-        message += f"   🆔 ID: `{reminder_id}`\n\n"
+        message += f"   🔄 {repeat_label}\n\n"
     
-    message += "Для видалення використайте /delete"
-    
-    await update.message.reply_text(message, parse_mode="Markdown")
+    await update.message.reply_text(
+        message, 
+        parse_mode="Markdown",
+        reply_markup=menu.get_reminders_menu()
+    )
 
 
 async def delete_reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -843,6 +911,11 @@ async def delete_reminder_confirm(update: Update, context: ContextTypes.DEFAULT_
     
     if query.data == "delete_cancel":
         await query.edit_message_text("❌ Видалення скасовано.")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Оберіть дію:",
+            reply_markup=menu.get_reminders_menu()
+        )
         return ConversationHandler.END
     
     reminder_id = int(query.data.replace("delete_", ""))
@@ -861,6 +934,12 @@ async def delete_reminder_confirm(update: Update, context: ContextTypes.DEFAULT_
         )
     else:
         await query.edit_message_text("❌ Не вдалося видалити нагадування.")
+    
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Оберіть дію:",
+        reply_markup=menu.get_reminders_menu()
+    )
     
     return ConversationHandler.END
 

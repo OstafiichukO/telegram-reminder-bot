@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 
 import database as db
 import subscription as sub
+import menu
 
 # Mood emojis with scores
 MOOD_OPTIONS = {
@@ -144,11 +145,18 @@ async def handle_mood_selection(update: Update, context: ContextTypes.DEFAULT_TY
     # Add encouraging message based on mood
     if mood_data["score"] <= 2:
         response += "\n💙 Пам'ятайте: погані дні бувають у всіх. "
-        response += "Спробуйте /breathe для заспокоєння або /cbt для роботи з думками."
+        response += "Спробуйте «🫁 Дихання» для заспокоєння."
     elif mood_data["score"] >= 4:
         response += "\n🌟 Чудово! Продовжуйте в тому ж дусі!"
     
     await query.edit_message_text(response, parse_mode="Markdown")
+    
+    # Send menu
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Оберіть функцію:",
+        reply_markup=menu.get_health_menu()
+    )
 
 
 async def mood_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -162,7 +170,8 @@ async def mood_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not entries:
         await update.message.reply_text(
             "📊 У вас ще немає записів настрою.\n\n"
-            "Використайте /mood щоб почати відстежувати!"
+            "Натисніть «🎭 Настрій» щоб почати відстежувати!",
+            reply_markup=menu.get_health_menu()
         )
         return
     
@@ -197,7 +206,11 @@ async def mood_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             message += "📉 Потребує уваги"
     
-    await update.message.reply_text(message, parse_mode="Markdown")
+    await update.message.reply_text(
+        message, 
+        parse_mode="Markdown",
+        reply_markup=menu.get_health_menu()
+    )
 
 
 # ============ BREATHING EXERCISES ============
@@ -287,8 +300,15 @@ async def handle_breathing_selection(update: Update, context: ContextTypes.DEFAU
         f"✅ *Вправу завершено!*\n\n"
         f"🫁 {exercise['name']}\n"
         f"Ви виконали {exercise['cycles']} циклів.\n\n"
-        f"Як ви себе почуваєте? Використайте /mood щоб записати.",
+        f"Як ви себе почуваєте? Натисніть «🎭 Настрій»",
         parse_mode="Markdown"
+    )
+    
+    # Send menu
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Оберіть функцію:",
+        reply_markup=menu.get_health_menu()
     )
 
 
@@ -378,7 +398,11 @@ async def handle_cbt_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         summary += "💙 Чудова робота! Регулярна практика допомагає покращити ментальне здоров'я."
         
-        await update.message.reply_text(summary, parse_mode="Markdown")
+        await update.message.reply_text(
+            summary, 
+            parse_mode="Markdown",
+            reply_markup=menu.get_health_menu()
+        )
         
         # Clean up
         context.user_data.pop("cbt_exercise", None)
@@ -487,9 +511,19 @@ async def handle_meds_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         med_id = int(action.replace("del_", ""))
         db.delete_medication(med_id, user_id)
         await query.edit_message_text("✅ Ліки видалено!")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Оберіть функцію:",
+            reply_markup=menu.get_health_menu()
+        )
     
     elif action == "cancel":
         await query.edit_message_text("❌ Скасовано.")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Оберіть функцію:",
+            reply_markup=menu.get_health_menu()
+        )
     
     return ConversationHandler.END
 
@@ -554,7 +588,8 @@ async def handle_med_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📦 {context.user_data.get('med_dosage') or 'Не вказано'}\n"
         f"⏰ Щодня о {time_text}\n\n"
         f"Я нагадуватиму вам про прийом!",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=menu.get_health_menu()
     )
     
     # Clear user data
@@ -592,3 +627,10 @@ async def handle_med_taken(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Не забудьте проконсультуватися з лікарем, якщо часто пропускаєте.",
             parse_mode="Markdown"
         )
+    
+    # Send menu
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text="Оберіть функцію:",
+        reply_markup=menu.get_health_menu()
+    )

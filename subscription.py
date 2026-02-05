@@ -6,6 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Labeled
 from telegram.ext import ContextTypes
 
 import database as db
+import menu
 
 # Admin user IDs from environment
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
@@ -52,18 +53,24 @@ async def subscription_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 Дякуємо за підтримку! 💚
 """
-        await update.message.reply_text(message, parse_mode="Markdown")
+        await update.message.reply_text(
+            message, 
+            parse_mode="Markdown",
+            reply_markup=menu.get_settings_menu()
+        )
     else:
         limits = db.SUBSCRIPTION_LIMITS["free"]
-        premium_limits = db.SUBSCRIPTION_LIMITS["premium"]
+        
+        # Get current usage
+        reminders_count = db.count_user_reminders(user_id)
+        meds_count = db.count_user_medications(user_id)
         
         message = f"""
 📊 *Ваша підписка: Free*
 
-*Поточні ліміти:*
-• Нагадувань: {limits['reminders']}
-• Ліків: {limits['medications']}
-• Записів настрою/день: {limits['mood_per_day']}
+*Використання:*
+• Нагадувань: {reminders_count}/{limits['reminders']}
+• Ліків: {meds_count}/{limits['medications']}
 • AI-повідомлень/день: {limits['ai_messages_per_day']}
 
 ⭐ *Переваги Premium:*
@@ -77,6 +84,7 @@ async def subscription_command(update: Update, context: ContextTypes.DEFAULT_TYP
 """
         keyboard = [
             [InlineKeyboardButton("⭐ Отримати Premium", callback_data="sub_buy")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="sub_back")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -115,8 +123,13 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
             parse_mode="Markdown"
         )
     
-    elif action == "cancel":
-        await query.edit_message_text("❌ Скасовано")
+    elif action == "cancel" or action == "back":
+        await query.edit_message_text("Оберіть опцію:")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="⚙️ Налаштування",
+            reply_markup=menu.get_settings_menu()
+        )
 
 
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
