@@ -1,0 +1,9 @@
+# Render Blueprint specification
+services:
+  - type: worker
+    name: telegram-reminder-bot
+    runtime: docker
+    plan: free
+    envVars:
+      - key: BOT_TOKEN
+        sync: false  # You'll set this manually in Render dashboard
