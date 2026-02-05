@@ -351,8 +351,14 @@ def main():
     # Initialize database
     db.init_db()
     
+    # Post init function to start scheduler
+    async def post_init(app):
+        scheduler.start_scheduler()
+        scheduler.load_all_reminders(app.bot)
+        logger.info("Scheduler started!")
+    
     # Create application
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(post_init).build()
     
     # Add conversation handler for adding reminders
     add_conv_handler = ConversationHandler(
@@ -384,12 +390,6 @@ def main():
     # Start health check server in a separate thread
     health_thread = Thread(target=run_health_server, daemon=True)
     health_thread.start()
-    
-    # Start scheduler
-    scheduler.start_scheduler()
-    
-    # Load existing reminders
-    scheduler.load_all_reminders(application.bot)
     
     # Run the bot
     logger.info("Bot started!")
