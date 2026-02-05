@@ -5,6 +5,7 @@ from threading import Thread
 from dotenv import load_dotenv
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from openai import AsyncOpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -29,6 +30,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# OpenAI client
+openai_client = None
+if os.getenv("OPENAI_API_KEY"):
+    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Store conversation history per user
+chat_history: dict[int, list] = {}
+
 # Conversation states
 TITLE, TIME, REPEAT = range(3)
 
@@ -46,19 +55,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message when /start is issued."""
     user = update.effective_user
     
+    gpt_status = "✅ Увімкнено" if openai_client else "❌ Не налаштовано"
+    
     welcome_text = f"""
 👋 Привіт, {user.first_name}!
 
-Я бот для нагадувань. Ось що я вмію:
+Я бот для нагадувань з підтримкою ChatGPT. Ось що я вмію:
 
 📝 /add - Створити нове нагадування
 📋 /list - Переглянути всі нагадування
 🗑 /delete - Видалити нагадування
+🧹 /clear - Очистити історію чату з AI
 ❓ /help - Допомога
 
-Почнімо? Використай /add щоб створити перше нагадування!
+🤖 *ChatGPT:* {gpt_status}
+Просто напишіть повідомлення, і я відповім!
+
+Почнімо? Використай /add щоб створити нагадування або просто напиши мені!
 """
-    await update.message.reply_text(welcome_text)
+    await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,6 +90,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 /delete - Видалити нагадування
 
+/clear - Очистити історію чату з AI
+
 /cancel - Скасувати поточну дію
 
 *Формат часу:*
@@ -87,8 +104,81 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Щодня - кожен день
 • Щотижня - кожен тиждень
 • Щомісяця - кожен місяць
+
+🤖 *ChatGPT:*
+Просто напишіть повідомлення (не команду), і я відповім за допомогою AI!
 """
     await update.message.reply_text(help_text, parse_mode="Markdown")
+
+
+async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear chat history with AI."""
+    user_id = update.effective_user.id
+    if user_id in chat_history:
+        chat_history[user_id] = []
+    await update.message.reply_text("🗑 Історію чату очищено!")
+
+
+async def chat_with_gpt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle regular messages with ChatGPT."""
+    if not openai_client:
+        await update.message.reply_text(
+            "⚠️ ChatGPT не налаштовано. Додайте OPENAI_API_KEY."
+        )
+        return
+    
+    user_id = update.effective_user.id
+    user_message = update.message.text
+    
+    # Initialize history for new users
+    if user_id not in chat_history:
+        chat_history[user_id] = []
+    
+    # Add user message to history
+    chat_history[user_id].append({
+        "role": "user",
+        "content": user_message
+    })
+    
+    # Keep only last 20 messages to save tokens
+    if len(chat_history[user_id]) > 20:
+        chat_history[user_id] = chat_history[user_id][-20:]
+    
+    # Show typing indicator
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action="typing"
+    )
+    
+    try:
+        # Call ChatGPT
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Ти корисний асистент. Відповідай українською мовою, якщо користувач пише українською. Будь дружнім і корисним."
+                },
+                *chat_history[user_id]
+            ],
+            max_tokens=1000
+        )
+        
+        assistant_message = response.choices[0].message.content
+        
+        # Add assistant response to history
+        chat_history[user_id].append({
+            "role": "assistant",
+            "content": assistant_message
+        })
+        
+        await update.message.reply_text(assistant_message)
+        
+    except Exception as e:
+        logger.error(f"ChatGPT error: {e}")
+        await update.message.reply_text(
+            "❌ Помилка при зверненні до ChatGPT. Спробуйте пізніше."
+        )
 
 
 async def add_reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -384,8 +474,15 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("list", list_reminders))
+    application.add_handler(CommandHandler("clear", clear_chat))
     application.add_handler(add_conv_handler)
     application.add_handler(delete_conv_handler)
+    
+    # ChatGPT handler for regular messages (must be last)
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        chat_with_gpt
+    ))
     
     # Start health check server in a separate thread
     health_thread = Thread(target=run_health_server, daemon=True)
