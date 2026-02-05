@@ -363,7 +363,24 @@ async def handle_cbt_selection(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_cbt_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle CBT exercise answers."""
+    # Check if user clicked a menu button instead of answering
+    text = update.message.text
+    if text in menu.MENU_COMMANDS:
+        # User wants to navigate away - end conversation and redirect
+        context.user_data.pop("cbt_exercise", None)
+        context.user_data.pop("cbt_step", None)
+        context.user_data.pop("cbt_answers", None)
+        await update.message.reply_text(
+            "❌ Вправу скасовано.",
+            reply_markup=menu.get_health_menu()
+        )
+        return ConversationHandler.END
+    
     if "cbt_exercise" not in context.user_data:
+        await update.message.reply_text(
+            "Оберіть функцію:",
+            reply_markup=menu.get_health_menu()
+        )
         return ConversationHandler.END
     
     exercise_key = context.user_data["cbt_exercise"]
@@ -530,7 +547,17 @@ async def handle_meds_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def handle_med_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle medication name input."""
-    context.user_data["med_name"] = update.message.text
+    text = update.message.text
+    
+    # Check if user clicked a menu button instead
+    if text in menu.MENU_COMMANDS:
+        await update.message.reply_text(
+            "❌ Додавання ліків скасовано.",
+            reply_markup=menu.get_health_menu()
+        )
+        return ConversationHandler.END
+    
+    context.user_data["med_name"] = text
     
     await update.message.reply_text(
         "💊 Введіть дозування (або напишіть 'пропустити'):\n\n"
@@ -542,7 +569,18 @@ async def handle_med_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_med_dosage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle medication dosage input."""
-    dosage = update.message.text
+    text = update.message.text
+    
+    # Check if user clicked a menu button instead
+    if text in menu.MENU_COMMANDS:
+        context.user_data.pop("med_name", None)
+        await update.message.reply_text(
+            "❌ Додавання ліків скасовано.",
+            reply_markup=menu.get_health_menu()
+        )
+        return ConversationHandler.END
+    
+    dosage = text
     if dosage.lower() == "пропустити":
         dosage = None
     context.user_data["med_dosage"] = dosage
@@ -558,7 +596,19 @@ async def handle_med_dosage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_med_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle medication time input."""
-    time_text = update.message.text.strip()
+    text = update.message.text
+    
+    # Check if user clicked a menu button instead
+    if text in menu.MENU_COMMANDS:
+        context.user_data.pop("med_name", None)
+        context.user_data.pop("med_dosage", None)
+        await update.message.reply_text(
+            "❌ Додавання ліків скасовано.",
+            reply_markup=menu.get_health_menu()
+        )
+        return ConversationHandler.END
+    
+    time_text = text.strip()
     
     try:
         # Validate time format

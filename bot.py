@@ -79,102 +79,114 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Handle menu button presses. Returns True if handled."""
-    text = update.message.text
-    
-    if text not in menu.MENU_COMMANDS:
-        return False  # Not a menu button
-    
-    action = menu.MENU_COMMANDS[text]
-    
-    # Handle submenu navigation
-    if action == "menu_reminders":
-        await update.message.reply_text(
-            "📝 *Нагадування*\n\nОберіть дію:",
-            parse_mode="Markdown",
-            reply_markup=menu.get_reminders_menu()
-        )
-        return True
-    
-    elif action == "menu_health":
-        await update.message.reply_text(
-            "💚 *Ментальне здоров'я*\n\nОберіть функцію:",
-            parse_mode="Markdown",
-            reply_markup=menu.get_health_menu()
-        )
-        return True
-    
-    elif action == "menu_settings":
-        await update.message.reply_text(
-            "⚙️ *Налаштування*\n\nОберіть опцію:",
-            parse_mode="Markdown",
-            reply_markup=menu.get_settings_menu()
-        )
-        return True
-    
-    elif action == "menu_main":
-        await update.message.reply_text(
-            "🏠 *Головне меню*",
-            parse_mode="Markdown",
-            reply_markup=menu.get_main_menu()
-        )
-        return True
-    
-    elif action == "menu_ai":
-        keyboard = [[InlineKeyboardButton(f"🤖 Відкрити {CHATGPT_BOT}", url=f"https://t.me/chatgpt_gidbot")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        text = update.message.text
         
-        await update.message.reply_text(
-            f"🤖 *AI Чат*\n\n"
-            f"Для спілкування з ChatGPT використовуйте бота:\n"
-            f"{CHATGPT_BOT_ESCAPED}\n\n"
-            f"Він допоможе вам з будь-якими питаннями!",
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
+        if text not in menu.MENU_COMMANDS:
+            return False  # Not a menu button
+        
+        action = menu.MENU_COMMANDS[text]
+        
+        # Handle submenu navigation
+        if action == "menu_reminders":
+            await update.message.reply_text(
+                "📝 *Нагадування*\n\nОберіть дію:",
+                parse_mode="Markdown",
+                reply_markup=menu.get_reminders_menu()
+            )
+            return True
+        
+        elif action == "menu_health":
+            await update.message.reply_text(
+                "💚 *Ментальне здоров'я*\n\nОберіть функцію:",
+                parse_mode="Markdown",
+                reply_markup=menu.get_health_menu()
+            )
+            return True
+        
+        elif action == "menu_settings":
+            await update.message.reply_text(
+                "⚙️ *Налаштування*\n\nОберіть опцію:",
+                parse_mode="Markdown",
+                reply_markup=menu.get_settings_menu()
+            )
+            return True
+        
+        elif action == "menu_main":
+            await update.message.reply_text(
+                "🏠 *Головне меню*",
+                parse_mode="Markdown",
+                reply_markup=menu.get_main_menu()
+            )
+            return True
+        
+        elif action == "menu_ai":
+            keyboard = [[InlineKeyboardButton(f"🤖 Відкрити {CHATGPT_BOT}", url=f"https://t.me/chatgpt_gidbot")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                f"🤖 *AI Чат*\n\n"
+                f"Для спілкування з ChatGPT використовуйте бота:\n"
+                f"{CHATGPT_BOT_ESCAPED}\n\n"
+                f"Він допоможе вам з будь-якими питаннями!",
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            return True
+        
+        # These are handled by ConversationHandlers - don't handle here
+        elif action in ["/add", "/delete"]:
+            return False  # Let ConversationHandler handle these
+        
+        # Handle simple commands directly
+        elif action == "/list":
+            await list_reminders(update, context)
+            return True
+        
+        elif action == "/mood":
+            await mh.mood_command(update, context)
+            return True
+        
+        elif action == "/moodstats":
+            await mh.mood_stats_command(update, context)
+            return True
+        
+        elif action == "/breathe":
+            await mh.breathe_command(update, context)
+            return True
+        
+        elif action == "/cbt":
+            await mh.cbt_command(update, context)
+            return True
+        
+        elif action == "/meds":
+            await mh.meds_command(update, context)
+            return True
+        
+        elif action == "/subscription":
+            await sub.subscription_command(update, context)
+            return True
+        
+        elif action == "/timezone":
+            await timezone_command(update, context)
+            return True
+        
+        elif action == "/help":
+            await help_command(update, context)
+            return True
+        
+        return False
+    
+    except Exception as e:
+        logger.error(f"Error in handle_menu_button: {e}")
+        try:
+            await update.message.reply_text(
+                "⚠️ Виникла помилка. Спробуйте ще раз.",
+                reply_markup=menu.get_main_menu()
+            )
+        except:
+            pass
         return True
-    
-    # These are handled by ConversationHandlers - don't handle here
-    elif action in ["/add", "/delete"]:
-        return False  # Let ConversationHandler handle these
-    
-    # Handle simple commands directly
-    elif action == "/list":
-        await list_reminders(update, context)
-        return True
-    
-    elif action == "/mood":
-        await mh.mood_command(update, context)
-        return True
-    
-    elif action == "/moodstats":
-        await mh.mood_stats_command(update, context)
-        return True
-    
-    elif action == "/breathe":
-        await mh.breathe_command(update, context)
-        return True
-    
-    elif action == "/cbt":
-        await mh.cbt_command(update, context)
-        return True
-    
-    elif action == "/meds":
-        await mh.meds_command(update, context)
-        return True
-    
-    elif action == "/subscription":
-        await sub.subscription_command(update, context)
-        return True
-    
-    elif action == "/timezone":
-        await timezone_command(update, context)
-        return True
-    
-    elif action == "/help":
-        await help_command(update, context)
-        return True
-    
-    return False
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -258,7 +270,17 @@ async def add_reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def add_reminder_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle reminder title input."""
-    context.user_data["reminder_title"] = update.message.text
+    text = update.message.text
+    
+    # Check if user clicked a menu button instead
+    if text in menu.MENU_COMMANDS:
+        await update.message.reply_text(
+            "❌ Створення нагадування скасовано.",
+            reply_markup=menu.get_reminders_menu()
+        )
+        return ConversationHandler.END
+    
+    context.user_data["reminder_title"] = text
     
     await update.message.reply_text(
         "⏰ Введіть дату і час нагадування:\n\n"
@@ -272,7 +294,18 @@ async def add_reminder_title(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def add_reminder_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle reminder time input."""
-    time_text = update.message.text.strip()
+    text = update.message.text
+    
+    # Check if user clicked a menu button instead
+    if text in menu.MENU_COMMANDS:
+        context.user_data.pop("reminder_title", None)
+        await update.message.reply_text(
+            "❌ Створення нагадування скасовано.",
+            reply_markup=menu.get_reminders_menu()
+        )
+        return ConversationHandler.END
+    
+    time_text = text.strip()
     
     try:
         # Try full datetime format
@@ -660,16 +693,26 @@ def main():
     # Handler for menu buttons and unknown messages
     async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Route messages - check menu buttons first."""
-        text = update.message.text
-        
-        # Check for menu buttons
-        if text in menu.MENU_COMMANDS:
-            handled = await handle_menu_button(update, context)
-            if handled:
-                return
-        
-        # Unknown message - show help
-        await handle_unknown_message(update, context)
+        try:
+            text = update.message.text
+            
+            # Check for menu buttons
+            if text in menu.MENU_COMMANDS:
+                handled = await handle_menu_button(update, context)
+                if handled:
+                    return
+            
+            # Unknown message - show help
+            await handle_unknown_message(update, context)
+        except Exception as e:
+            logger.error(f"Error in message_router: {e}")
+            try:
+                await update.message.reply_text(
+                    "⚠️ Виникла помилка. Спробуйте ще раз.",
+                    reply_markup=menu.get_main_menu()
+                )
+            except:
+                pass
     
     # Message handler (must be last)
     application.add_handler(MessageHandler(
