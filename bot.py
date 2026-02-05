@@ -191,7 +191,7 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show help message."""
-    help_text = """
+    help_text = f"""
 📚 *Довідка*
 
 *📝 Нагадування:*
@@ -210,15 +210,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *🤖 AI-асистент:*
 Для чату з AI використовуйте {CHATGPT_BOT_ESCAPED}
 
+*💫 Підписка:*
+/subscription - Статус та оплата
+/paysupport - Підтримка з оплатою
+/terms - Умови використання
+
 *⏰ Формат часу:*
 `25.12.2025 14:30` або `14:30`
 
 *🔄 Повторення:*
 Один раз • Щогодини • Щодня • Щотижня • Щомісяця
-
-*💡 Поради:*
-• Записуйте настрій щодня для кращого розуміння себе
-• Використовуйте дихальні вправи при стресі
 """
     await update.message.reply_text(
         help_text, 
@@ -666,6 +667,8 @@ def main():
     
     # Subscription handlers
     application.add_handler(CommandHandler("subscription", sub.subscription_command))
+    application.add_handler(CommandHandler("paysupport", sub.paysupport_command))
+    application.add_handler(CommandHandler("terms", sub.terms_command))
     application.add_handler(CallbackQueryHandler(
         sub.handle_subscription_callback,
         pattern="^sub_"
@@ -676,6 +679,7 @@ def main():
     ))
     
     # Admin handlers
+    application.add_handler(CommandHandler("refund", sub.refund_command))
     application.add_handler(CommandHandler("admin", sub.admin_command))
     application.add_handler(CommandHandler("grant", sub.grant_premium_command))
     application.add_handler(CommandHandler("revoke", sub.revoke_premium_command))

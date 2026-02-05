@@ -1,6 +1,7 @@
 """Subscription management and admin features."""
 
 import os
+import logging
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import ContextTypes
@@ -8,13 +9,16 @@ from telegram.ext import ContextTypes
 import database as db
 import menu
 
+logger = logging.getLogger(__name__)
+
 # Admin user IDs from environment
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
-# Subscription prices (in smallest currency unit, e.g., kopecks for UAH)
+# Subscription prices in Telegram Stars (XTR)
+# Stars are whole numbers, ~$0.02-0.03 per star
 SUBSCRIPTION_PRICES = {
-    "monthly": {"amount": 9900, "label": "Преміум (1 місяць)", "days": 30},
-    "yearly": {"amount": 79900, "label": "Преміум (1 рік)", "days": 365},
+    "monthly": {"stars": 50, "label": "⭐ Преміум (1 місяць)", "days": 30},
+    "yearly": {"stars": 400, "label": "⭐ Преміум (1 рік)", "days": 365},
 }
 
 
@@ -65,25 +69,28 @@ async def subscription_command(update: Update, context: ContextTypes.DEFAULT_TYP
         reminders_count = db.count_user_reminders(user_id)
         meds_count = db.count_user_medications(user_id)
         
+        monthly_price = SUBSCRIPTION_PRICES["monthly"]["stars"]
+        yearly_price = SUBSCRIPTION_PRICES["yearly"]["stars"]
+        
         message = f"""
 📊 *Ваша підписка: Free*
 
 *Використання:*
 • Нагадувань: {reminders_count}/{limits['reminders']}
 • Ліків: {meds_count}/{limits['medications']}
-• AI-повідомлень/день: {limits['ai_messages_per_day']}
+• Записів настрою/день: {limits['mood_per_day']}
 
 ⭐ *Переваги Premium:*
 • ♾️ Безліміт усіх функцій
 • 🚀 Пріоритетна підтримка
 • 🎁 Нові функції першими
 
-💰 *Ціни:*
-• 99 грн/місяць
-• 799 грн/рік (економія 33%)
+💫 *Ціни (Telegram Stars):*
+• {monthly_price} ⭐ / місяць
+• {yearly_price} ⭐ / рік (економія ~33%)
 """
         keyboard = [
-            [InlineKeyboardButton("⭐ Отримати Premium", callback_data="sub_buy")],
+            [InlineKeyboardButton("💫 Отримати Premium", callback_data="sub_buy")],
             [InlineKeyboardButton("🔙 Назад", callback_data="sub_back")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -103,13 +110,16 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
     action = query.data.replace("sub_", "")
     
     if action == "buy":
+        monthly = SUBSCRIPTION_PRICES["monthly"]
+        yearly = SUBSCRIPTION_PRICES["yearly"]
+        
         keyboard = [
             [InlineKeyboardButton(
-                "📅 1 місяць — 99 грн", 
+                f"📅 1 місяць — {monthly['stars']} ⭐", 
                 callback_data="pay_monthly"
             )],
             [InlineKeyboardButton(
-                "📅 1 рік — 799 грн (знижка 33%)", 
+                f"📅 1 рік — {yearly['stars']} ⭐ (знижка ~33%)", 
                 callback_data="pay_yearly"
             )],
             [InlineKeyboardButton("❌ Скасувати", callback_data="sub_cancel")],
@@ -117,8 +127,9 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            "⭐ *Оберіть план підписки:*\n\n"
-            "Оплата через Telegram Payments (карта Visa/Mastercard)",
+            "💫 *Оберіть план підписки:*\n\n"
+            "Оплата через Telegram Stars ⭐\n"
+            "_Зірки можна придбати прямо в Telegram_",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
@@ -133,55 +144,85 @@ async def handle_subscription_callback(update: Update, context: ContextTypes.DEF
 
 
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle payment plan selection."""
+    """Handle payment plan selection - send invoice with Telegram Stars."""
     query = update.callback_query
     await query.answer()
     
     plan = query.data.replace("pay_", "")
     
-    payment_token = os.getenv("PAYMENT_PROVIDER_TOKEN")
-    
-    if not payment_token:
-        # No payment provider - show manual payment info
-        await query.edit_message_text(
-            "💳 *Оплата підписки*\n\n"
-            "Для оплати зв'яжіться з адміністратором:\n"
-            "@YourAdminUsername\n\n"
-            "Або надішліть оплату на:\n"
-            "• Monobank: 1234 5678 9012 3456\n"
-            "• PayPal: your@email.com\n\n"
-            "Після оплати надішліть скріншот адміністратору.",
-            parse_mode="Markdown"
-        )
-        return
-    
-    # Send invoice via Telegram Payments
+    # Get price info
     price_info = SUBSCRIPTION_PRICES.get(plan)
     if not price_info:
+        await query.edit_message_text("❌ Невідомий план підписки.")
         return
     
-    prices = [LabeledPrice(label=price_info["label"], amount=price_info["amount"])]
+    # Create invoice with Telegram Stars (XTR)
+    # For digital goods, provider_token should be empty string
+    prices = [LabeledPrice(label=price_info["label"], amount=price_info["stars"])]
     
-    await context.bot.send_invoice(
-        chat_id=query.message.chat_id,
-        title=price_info["label"],
-        description="Преміум підписка на бота для ментального здоров'я",
-        payload=f"premium_{plan}_{query.from_user.id}",
-        provider_token=payment_token,
-        currency="UAH",
-        prices=prices,
-        start_parameter="premium-subscription",
-    )
+    try:
+        await query.edit_message_text(
+            f"💫 Формую рахунок на {price_info['stars']} ⭐...",
+            parse_mode="Markdown"
+        )
+        
+        await context.bot.send_invoice(
+            chat_id=query.message.chat_id,
+            title=price_info["label"],
+            description=f"Преміум підписка на {price_info['days']} днів. Безліміт усіх функцій!",
+            payload=f"premium_{plan}_{query.from_user.id}",
+            provider_token="",  # Empty for digital goods with Stars
+            currency="XTR",  # Telegram Stars
+            prices=prices,
+            start_parameter="premium-subscription",
+        )
+        
+        logger.info(f"Invoice sent to user {query.from_user.id} for {plan} plan")
+        
+    except Exception as e:
+        logger.error(f"Error sending invoice: {e}")
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="❌ Помилка при створенні рахунку. Спробуйте пізніше.",
+            reply_markup=menu.get_settings_menu()
+        )
 
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle pre-checkout query."""
+    """
+    Handle pre-checkout query.
+    Must respond within 10 seconds or transaction is canceled.
+    """
     query = update.pre_checkout_query
-    await query.answer(ok=True)
+    
+    try:
+        # Parse payload to validate
+        payload = query.invoice_payload
+        parts = payload.split("_")
+        
+        if len(parts) != 3 or parts[0] != "premium":
+            await query.answer(ok=False, error_message="Невірний формат замовлення.")
+            return
+        
+        plan = parts[1]
+        if plan not in SUBSCRIPTION_PRICES:
+            await query.answer(ok=False, error_message="Невідомий план підписки.")
+            return
+        
+        # All good - approve the payment
+        await query.answer(ok=True)
+        logger.info(f"Pre-checkout approved for user {query.from_user.id}, plan: {plan}")
+        
+    except Exception as e:
+        logger.error(f"Pre-checkout error: {e}")
+        await query.answer(ok=False, error_message="Помилка обробки замовлення. Спробуйте пізніше.")
 
 
 async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle successful payment."""
+    """
+    Handle successful payment.
+    Store telegram_payment_charge_id for potential refunds.
+    """
     payment = update.message.successful_payment
     payload = payment.invoice_payload
     
@@ -190,18 +231,38 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     plan = parts[1]
     user_id = int(parts[2])
     
+    # Get payment charge ID for potential refunds
+    telegram_charge_id = payment.telegram_payment_charge_id
+    stars_paid = SUBSCRIPTION_PRICES[plan]["stars"]
+    
     # Calculate expiration
     days = SUBSCRIPTION_PRICES[plan]["days"]
     expires = (datetime.now() + timedelta(days=days)).isoformat()
     
-    # Update subscription
+    # Update subscription in database
     db.set_subscription(user_id, "premium", expires)
     
+    # Store payment info for potential refunds
+    db.add_payment(
+        user_id=user_id,
+        telegram_charge_id=telegram_charge_id,
+        plan=plan,
+        stars_amount=stars_paid
+    )
+    
+    logger.info(
+        f"Payment successful! User: {user_id}, Plan: {plan}, "
+        f"Stars: {stars_paid}, Charge ID: {telegram_charge_id}, Expires: {expires}"
+    )
+    
     await update.message.reply_text(
-        "🎉 *Дякуємо за оплату!*\n\n"
-        "⭐ Ваша Premium підписка активована!\n\n"
-        "Тепер ви маєте доступ до всіх функцій без обмежень.",
-        parse_mode="Markdown"
+        f"🎉 *Дякуємо за оплату!*\n\n"
+        f"💫 Ви оплатили: {stars_paid} ⭐\n"
+        f"⭐ Ваша Premium підписка активована!\n"
+        f"📅 Діє до: {datetime.fromisoformat(expires).strftime('%d.%m.%Y')}\n\n"
+        f"Тепер ви маєте доступ до всіх функцій без обмежень! 🚀",
+        parse_mode="Markdown",
+        reply_markup=menu.get_main_menu()
     )
 
 
@@ -229,11 +290,13 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *Команди:*
 /grant `user_id` - Надати безлімітний Premium
 /revoke `user_id` - Забрати Premium
+/refund `user_id` `charge_id` - Повернути зірки
 /users - Список користувачів
 /broadcast `текст` - Розсилка всім
 
-*Приклад:*
+*Приклади:*
 `/grant 123456789`
+`/refund 123456789 abc123charge`
 """
     await update.message.reply_text(message, parse_mode="Markdown")
 
@@ -373,6 +436,146 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📬 Доставлено: {sent}\n"
         f"❌ Не доставлено: {failed}"
     )
+
+
+# ============ PAYMENT SUPPORT & TERMS ============
+
+async def paysupport_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /paysupport command - required by Telegram for payment bots."""
+    await update.message.reply_text(
+        "💬 *Підтримка з питань оплати*\n\n"
+        "Якщо у вас виникли проблеми з оплатою або підпискою:\n\n"
+        "1️⃣ Перевірте статус підписки: /subscription\n"
+        "2️⃣ Зв'яжіться з адміністратором бота\n"
+        "3️⃣ Опишіть проблему детально\n\n"
+        "📧 Ми відповімо якнайшвидше!\n\n"
+        "_Зверніть увагу: підтримка Telegram не може допомогти "
+        "з питаннями покупок через цього бота._",
+        parse_mode="Markdown",
+        reply_markup=menu.get_settings_menu()
+    )
+
+
+async def terms_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /terms command - required by Telegram for payment bots."""
+    await update.message.reply_text(
+        "📜 *Умови використання*\n\n"
+        "*1. Підписка Premium:*\n"
+        "• Надає доступ до розширених функцій\n"
+        "• Діє протягом оплаченого періоду\n"
+        "• Автоматично не поновлюється\n\n"
+        "*2. Оплата:*\n"
+        "• Здійснюється через Telegram Stars\n"
+        "• Після оплати підписка активується миттєво\n\n"
+        "*3. Повернення коштів:*\n"
+        "• Можливе протягом 24 годин після покупки\n"
+        "• Зверніться через /paysupport\n\n"
+        "*4. Відповідальність:*\n"
+        "• Бот надає інформаційні послуги\n"
+        "• Не замінює професійну медичну допомогу\n\n"
+        "_Використовуючи бота, ви погоджуєтесь з цими умовами._",
+        parse_mode="Markdown",
+        reply_markup=menu.get_settings_menu()
+    )
+
+
+async def refund_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to refund a payment."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ У вас немає доступу.")
+        return
+    
+    if len(context.args) < 1:
+        await update.message.reply_text(
+            "❌ Використання:\n"
+            "`/refund user_id` - показати платежі\n"
+            "`/refund user_id charge_id` - повернути кошти\n\n"
+            "Charge ID можна знайти через `/refund user_id`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        
+        # If only user_id provided, show their payments
+        if len(context.args) == 1:
+            payments = db.get_user_payments(target_user_id)
+            
+            if not payments:
+                await update.message.reply_text(
+                    f"📭 У користувача `{target_user_id}` немає платежів.",
+                    parse_mode="Markdown"
+                )
+                return
+            
+            message = f"💳 *Платежі користувача* `{target_user_id}`:\n\n"
+            for p_id, charge_id, plan, stars, status, created in payments:
+                date = datetime.fromisoformat(created).strftime("%d.%m.%Y %H:%M")
+                status_emoji = "✅" if status == "completed" else "↩️"
+                message += f"{status_emoji} {plan}: {stars}⭐\n"
+                message += f"   ID: `{charge_id[:20]}...`\n"
+                message += f"   {date}\n\n"
+            
+            message += "Для повернення:\n`/refund user_id charge_id`"
+            await update.message.reply_text(message, parse_mode="Markdown")
+            return
+        
+        charge_id = context.args[1]
+        
+        # Check if payment exists
+        payment = db.get_payment_by_charge_id(charge_id)
+        if not payment:
+            await update.message.reply_text(
+                f"❌ Платіж з ID `{charge_id}` не знайдено.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        if payment[5] == "refunded":
+            await update.message.reply_text("❌ Цей платіж вже було повернуто.")
+            return
+        
+        # Refund using Telegram Bot API
+        await context.bot.refund_star_payment(
+            user_id=target_user_id,
+            telegram_payment_charge_id=charge_id
+        )
+        
+        # Update payment status
+        db.update_payment_status(charge_id, "refunded")
+        
+        # Revoke premium
+        db.set_subscription(target_user_id, "free", None)
+        
+        await update.message.reply_text(
+            f"✅ *Повернення успішне!*\n\n"
+            f"Користувач: `{target_user_id}`\n"
+            f"Зірок повернуто: {payment[4]}⭐\n"
+            f"Premium статус скасовано.",
+            parse_mode="Markdown"
+        )
+        
+        # Notify user
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"💫 *Повернення коштів*\n\n"
+                     f"Вам повернуто {payment[4]}⭐ за підписку.\n"
+                     f"Ваш Premium статус деактивовано.",
+                parse_mode="Markdown"
+            )
+        except:
+            pass
+            
+    except Exception as e:
+        logger.error(f"Refund error: {e}")
+        await update.message.reply_text(
+            f"❌ Помилка повернення: {e}",
+            parse_mode="Markdown"
+        )
 
 
 # ============ LIMIT CHECKING ============

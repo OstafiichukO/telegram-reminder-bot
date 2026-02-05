@@ -75,6 +75,19 @@ def init_db():
         )
     """)
     
+    # Payments table (for refunds)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            telegram_charge_id TEXT NOT NULL,
+            plan TEXT NOT NULL,
+            stars_amount INTEGER NOT NULL,
+            status TEXT DEFAULT 'completed',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     conn.commit()
     conn.close()
 
@@ -560,3 +573,75 @@ def update_reminder_time(reminder_id: int, new_time: datetime):
     
     conn.commit()
     conn.close()
+
+
+# ============ PAYMENTS ============
+
+def add_payment(user_id: int, telegram_charge_id: str, plan: str, stars_amount: int) -> int:
+    """Record a payment for refund tracking."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        INSERT INTO payments (user_id, telegram_charge_id, plan, stars_amount)
+        VALUES (?, ?, ?, ?)
+    """, (user_id, telegram_charge_id, plan, stars_amount))
+    
+    payment_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return payment_id
+
+
+def get_user_payments(user_id: int) -> list:
+    """Get all payments for a user."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, telegram_charge_id, plan, stars_amount, status, created_at
+        FROM payments
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+    """, (user_id,))
+    
+    payments = cursor.fetchall()
+    conn.close()
+    
+    return payments
+
+
+def get_payment_by_charge_id(charge_id: str) -> Optional[tuple]:
+    """Get payment by Telegram charge ID."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, user_id, telegram_charge_id, plan, stars_amount, status, created_at
+        FROM payments
+        WHERE telegram_charge_id = ?
+    """, (charge_id,))
+    
+    payment = cursor.fetchone()
+    conn.close()
+    
+    return payment
+
+
+def update_payment_status(charge_id: str, status: str) -> bool:
+    """Update payment status (e.g., to 'refunded')."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        UPDATE payments
+        SET status = ?
+        WHERE telegram_charge_id = ?
+    """, (status, charge_id))
+    
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    
+    return affected > 0
