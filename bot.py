@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # External ChatGPT bot
 CHATGPT_BOT = "@chatgpt_gidbot"
+CHATGPT_BOT_ESCAPED = "@chatgpt\\_gidbot"  # Escaped for Markdown
 
 # Conversation states
 TITLE, TIME, REPEAT = range(3)
@@ -67,7 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 *Використовуйте меню нижче* для швидкого доступу до функцій!
 
-🤖 Для AI-чату використовуйте {CHATGPT_BOT}
+🤖 Для AI-чату використовуйте {CHATGPT_BOT_ESCAPED}
 """
     await update.message.reply_text(
         welcome_text, 
@@ -125,29 +126,20 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             f"🤖 *AI Чат*\n\n"
             f"Для спілкування з ChatGPT використовуйте бота:\n"
-            f"{CHATGPT_BOT}\n\n"
+            f"{CHATGPT_BOT_ESCAPED}\n\n"
             f"Він допоможе вам з будь-якими питаннями!",
             parse_mode="Markdown",
             reply_markup=reply_markup
         )
         return True
     
-    # Handle command shortcuts - call functions directly
-    elif action == "/add":
-        result = await add_reminder_start(update, context)
-        if result is not None:
-            context.user_data["conversation_state"] = "add_reminder"
-            context.user_data["conversation_step"] = result
-        return True
+    # These are handled by ConversationHandlers - don't handle here
+    elif action in ["/add", "/delete"]:
+        return False  # Let ConversationHandler handle these
     
+    # Handle simple commands directly
     elif action == "/list":
         await list_reminders(update, context)
-        return True
-    
-    elif action == "/delete":
-        result = await delete_reminder_start(update, context)
-        if result is not None and result != ConversationHandler.END:
-            context.user_data["conversation_state"] = "delete_reminder"
         return True
     
     elif action == "/mood":
@@ -204,7 +196,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /meds - Нагадування про ліки
 
 *🤖 AI-асистент:*
-Для чату з AI використовуйте {CHATGPT_BOT}
+Для чату з AI використовуйте {CHATGPT_BOT_ESCAPED}
 
 *⏰ Формат часу:*
 `25.12.2025 14:30` або `14:30`
@@ -548,22 +540,34 @@ def main():
     
     # Add conversation handler for adding reminders
     add_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("add", add_reminder_start)],
+        entry_points=[
+            CommandHandler("add", add_reminder_start),
+            MessageHandler(filters.Regex("^➕ Нове нагадування$"), add_reminder_start),
+        ],
         states={
-            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_reminder_title)],
-            TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_reminder_time)],
+            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔙"), add_reminder_title)],
+            TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔙"), add_reminder_time)],
             REPEAT: [CallbackQueryHandler(add_reminder_repeat, pattern="^repeat_")],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(filters.Regex("^🔙 Головне меню$"), cancel),
+        ],
     )
     
     # Add conversation handler for deleting reminders
     delete_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("delete", delete_reminder_start)],
+        entry_points=[
+            CommandHandler("delete", delete_reminder_start),
+            MessageHandler(filters.Regex("^🗑 Видалити$"), delete_reminder_start),
+        ],
         states={
             0: [CallbackQueryHandler(delete_reminder_confirm, pattern="^delete_")],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(filters.Regex("^🔙 Головне меню$"), cancel),
+        ],
     )
     
     # Register handlers
@@ -597,9 +601,12 @@ def main():
     cbt_conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(mh.handle_cbt_selection, pattern="^cbt_")],
         states={
-            mh.CBT_EXERCISE: [MessageHandler(filters.TEXT & ~filters.COMMAND, mh.handle_cbt_answer)],
+            mh.CBT_EXERCISE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔙"), mh.handle_cbt_answer)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(filters.Regex("^🔙 Головне меню$"), cancel),
+        ],
     )
     application.add_handler(cbt_conv_handler)
     
@@ -607,11 +614,14 @@ def main():
     meds_conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(mh.handle_meds_callback, pattern="^meds_")],
         states={
-            mh.MED_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, mh.handle_med_name)],
-            mh.MED_DOSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, mh.handle_med_dosage)],
-            mh.MED_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, mh.handle_med_time)],
+            mh.MED_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔙"), mh.handle_med_name)],
+            mh.MED_DOSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔙"), mh.handle_med_dosage)],
+            mh.MED_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^🔙"), mh.handle_med_time)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(filters.Regex("^🔙 Головне меню$"), cancel),
+        ],
     )
     application.add_handler(meds_conv_handler)
     
