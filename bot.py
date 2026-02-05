@@ -1,12 +1,10 @@
 import os
-import json
 import logging
 from datetime import datetime, timedelta
 from threading import Thread
 from dotenv import load_dotenv
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from openai import AsyncOpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -34,19 +32,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# OpenAI client
-openai_client = None
-if os.getenv("OPENAI_API_KEY"):
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Store conversation history per user
-chat_history: dict[int, list] = {}
-
-# Store pending reminders awaiting confirmation
-pending_reminders: dict[int, dict] = {}
-
-# Track daily AI message counts per user (resets daily)
-ai_message_counts: dict[int, dict] = {}  # {user_id: {"date": "2024-01-01", "count": 5}}
+# External ChatGPT bot
+CHATGPT_BOT = "@chatgpt_gidbot"
 
 # Conversation states
 TITLE, TIME, REPEAT = range(3)
@@ -69,7 +56,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = db.get_or_create_user_settings(user.id)
     is_premium = db.is_premium(user.id)
     
-    gpt_status = "✅" if openai_client else "❌"
     sub_status = "⭐ Premium" if is_premium else "Free"
     
     welcome_text = f"""
@@ -79,11 +65,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📊 Ваш план: *{sub_status}*
 
-*Використовуйте меню нижче* для швидкого доступу до функцій або просто напишіть мені!
+*Використовуйте меню нижче* для швидкого доступу до функцій!
 
-🤖 AI-асистент: {gpt_status}
-
-Напишіть "нагадай мені..." і я створю нагадування автоматично!
+🤖 Для AI-чату використовуйте {CHATGPT_BOT}
 """
     await update.message.reply_text(
         welcome_text, 
@@ -135,15 +119,16 @@ async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return True
     
     elif action == "menu_ai":
+        keyboard = [[InlineKeyboardButton(f"🤖 Відкрити {CHATGPT_BOT}", url=f"https://t.me/chatgpt_gidbot")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await update.message.reply_text(
-            "🤖 *AI Чат*\n\n"
-            "Просто напишіть мені що завгодно!\n\n"
-            "Наприклад:\n"
-            "• «Нагадай завтра о 9 про зустріч»\n"
-            "• «Як покращити сон?»\n"
-            "• «Порадь дихальну вправу»",
+            f"🤖 *AI Чат*\n\n"
+            f"Для спілкування з ChatGPT використовуйте бота:\n"
+            f"{CHATGPT_BOT}\n\n"
+            f"Він допоможе вам з будь-якими питаннями!",
             parse_mode="Markdown",
-            reply_markup=menu.get_main_menu()
+            reply_markup=reply_markup
         )
         return True
     
@@ -219,9 +204,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /meds - Нагадування про ліки
 
 *🤖 AI-асистент:*
-Просто напишіть повідомлення!
-Наприклад: "Нагадай завтра о 9 про зустріч"
-/clear - Очистити історію чату
+Для чату з AI використовуйте {CHATGPT_BOT}
 
 *⏰ Формат часу:*
 `25.12.2025 14:30` або `14:30`
@@ -232,7 +215,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *💡 Поради:*
 • Записуйте настрій щодня для кращого розуміння себе
 • Використовуйте дихальні вправи при стресі
-• AI може створювати нагадування з контексту
 """
     await update.message.reply_text(
         help_text, 
@@ -241,437 +223,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear chat history with AI."""
-    user_id = update.effective_user.id
-    if user_id in chat_history:
-        chat_history[user_id] = []
-    await update.message.reply_text("🗑 Історію чату очищено!")
-
-
-def check_ai_limit(user_id: int) -> tuple[bool, str]:
-    """Check if user can send AI message."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    # Get or create user's counter
-    if user_id not in ai_message_counts:
-        ai_message_counts[user_id] = {"date": today, "count": 0}
-    
-    user_counter = ai_message_counts[user_id]
-    
-    # Reset if new day
-    if user_counter["date"] != today:
-        user_counter["date"] = today
-        user_counter["count"] = 0
-    
-    # Check limit
-    limits = db.get_user_limits(user_id)
-    limit = limits.get("ai_messages_per_day", 10)
-    
-    if user_counter["count"] >= limit:
-        return False, (
-            f"⚠️ *Ліміт AI-повідомлень вичерпано!*\n\n"
-            f"Використано: {user_counter['count']}/{limit} на сьогодні\n\n"
-            f"⭐ Оновіть до Premium для безлімітного AI!\n"
-            f"Використайте /subscription"
-        )
-    
-    return True, ""
-
-
-def increment_ai_count(user_id: int):
-    """Increment AI message count for user."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    if user_id not in ai_message_counts:
-        ai_message_counts[user_id] = {"date": today, "count": 0}
-    
-    if ai_message_counts[user_id]["date"] != today:
-        ai_message_counts[user_id] = {"date": today, "count": 0}
-    
-    ai_message_counts[user_id]["count"] += 1
-
-
-async def chat_with_gpt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle regular messages with ChatGPT."""
-    if not openai_client:
-        await update.message.reply_text(
-            "⚠️ ChatGPT не налаштовано. Додайте OPENAI_API_KEY."
-        )
-        return
-    
-    user_id = update.effective_user.id
-    user_message = update.message.text
-    
-    # Check AI message limit
-    allowed, limit_msg = check_ai_limit(user_id)
-    if not allowed:
-        await update.message.reply_text(limit_msg, parse_mode="Markdown")
-        return
-    
-    # Initialize history for new users
-    if user_id not in chat_history:
-        chat_history[user_id] = []
-    
-    # Add user message to history
-    chat_history[user_id].append({
-        "role": "user",
-        "content": user_message
-    })
-    
-    # Keep only last 20 messages to save tokens
-    if len(chat_history[user_id]) > 20:
-        chat_history[user_id] = chat_history[user_id][-20:]
-    
-    # Show typing indicator
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action="typing"
-    )
-    
-    # Get current date/time for context
-    now = datetime.now()
-    current_datetime = now.strftime("%d.%m.%Y %H:%M")
-    current_weekday = ["понеділок", "вівторок", "середа", "четвер", "п'ятниця", "субота", "неділя"][now.weekday()]
-    
-    system_prompt = f"""Ти корисний асистент з функцією створення нагадувань. Відповідай українською мовою.
-
-Поточна дата і час: {current_datetime} ({current_weekday})
-
-ВАЖЛИВО: Якщо користувач хоче створити нагадування (наприклад: "нагадай мені...", "створи нагадування...", "не забути...", "через годину нагадай...", тощо), ти ПОВИНЕН відповісти ТІЛЬКИ валідним JSON об'єктом без додаткового тексту:
-
-{{
-    "is_reminder": true,
-    "title": "короткий опис нагадування",
-    "datetime": "ДД.ММ.РРРР ГГ:ХХ",
-    "repeat": "once|hourly|daily|weekly|monthly",
-    "message": "дружнє підтвердження українською"
-}}
-
-Правила для datetime:
-- "завтра о 9" = завтрашня дата о 09:00
-- "через годину" = поточний час + 1 година
-- "через 30 хвилин" = поточний час + 30 хвилин
-- "в понеділок о 10" = найближчий понеділок о 10:00
-- "щодня о 8 ранку" = завтра о 08:00, repeat: "daily"
-
-Правила для repeat:
-- За замовчуванням "once" (один раз)
-- "щодня", "кожен день" = "daily"
-- "щотижня", "кожен тиждень" = "weekly"  
-- "щомісяця" = "monthly"
-- "щогодини" = "hourly"
-
-Якщо це НЕ запит на нагадування, просто відповідай як звичайний асистент (без JSON)."""
-
-    try:
-        # Call ChatGPT
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                *chat_history[user_id]
-            ],
-            max_tokens=1000
-        )
-        
-        assistant_message = response.choices[0].message.content.strip()
-        
-        # Try to parse as reminder JSON
-        try:
-            # Check if response looks like JSON
-            if assistant_message.startswith("{") and "is_reminder" in assistant_message:
-                reminder_data = json.loads(assistant_message)
-                
-                if reminder_data.get("is_reminder"):
-                    # Parse the datetime
-                    reminder_time = datetime.strptime(
-                        reminder_data["datetime"], 
-                        "%d.%m.%Y %H:%M"
-                    )
-                    
-                    # Validate time is in future
-                    if reminder_time <= datetime.now():
-                        await update.message.reply_text(
-                            "❌ Вказаний час вже минув. Спробуйте ще раз з майбутнім часом."
-                        )
-                        return
-                    
-                    # Store pending reminder
-                    pending_reminders[user_id] = {
-                        "title": reminder_data["title"],
-                        "datetime": reminder_time,
-                        "repeat": reminder_data.get("repeat", "once"),
-                        "chat_id": update.effective_chat.id
-                    }
-                    
-                    # Format confirmation message
-                    time_str = reminder_time.strftime("%d.%m.%Y о %H:%M")
-                    repeat_label = REPEAT_OPTIONS.get(
-                        reminder_data.get("repeat", "once"), 
-                        "Один раз"
-                    )
-                    
-                    confirm_message = f"""🔔 *Створити нагадування?*
-
-📌 *Назва:* {reminder_data["title"]}
-⏰ *Час:* {time_str}
-🔄 *Повторення:* {repeat_label}
-
-{reminder_data.get("message", "")}"""
-                    
-                    # Create confirmation buttons
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("✅ Створити", callback_data="ai_confirm"),
-                            InlineKeyboardButton("❌ Скасувати", callback_data="ai_cancel")
-                        ],
-                        [
-                            InlineKeyboardButton("✏️ Змінити час", callback_data="ai_edit_time"),
-                            InlineKeyboardButton("🔄 Змінити повторення", callback_data="ai_edit_repeat")
-                        ]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    
-                    await update.message.reply_text(
-                        confirm_message,
-                        reply_markup=reply_markup,
-                        parse_mode="Markdown"
-                    )
-                    
-                    # Add to history for context
-                    chat_history[user_id].append({
-                        "role": "assistant",
-                        "content": f"Запропоновано створити нагадування: {reminder_data['title']} на {time_str}"
-                    })
-                    return
-                    
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            # Not a valid reminder JSON, treat as regular message
-            logger.debug(f"Not a reminder response: {e}")
-        
-        # Regular chat response
-        chat_history[user_id].append({
-            "role": "assistant",
-            "content": assistant_message
-        })
-        
-        # Increment AI message count
-        increment_ai_count(user_id)
-        
-        await update.message.reply_text(assistant_message)
-        
-    except Exception as e:
-        logger.error(f"ChatGPT error: {e}")
-        await update.message.reply_text(
-            "❌ Помилка при зверненні до ChatGPT. Спробуйте пізніше."
-        )
-
-
-async def handle_ai_reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle AI reminder confirmation callbacks."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    action = query.data
-    
-    if action == "ai_confirm":
-        # Create the reminder
-        if user_id not in pending_reminders:
-            await query.edit_message_text("❌ Нагадування не знайдено. Спробуйте ще раз.")
-            return
-        
-        reminder = pending_reminders[user_id]
-        
-        # Save to database
-        reminder_id = db.add_reminder(
-            user_id=user_id,
-            chat_id=reminder["chat_id"],
-            title=reminder["title"],
-            reminder_time=reminder["datetime"],
-            repeat_type=reminder["repeat"]
-        )
-        
-        # Schedule the reminder
-        bot = context.application.bot
-        scheduler.schedule_reminder(bot, reminder_id, reminder["datetime"])
-        
-        # Format confirmation
-        time_str = reminder["datetime"].strftime("%d.%m.%Y о %H:%M")
-        repeat_label = REPEAT_OPTIONS.get(reminder["repeat"], "Один раз")
-        
-        await query.edit_message_text(
-            f"✅ *Нагадування створено!*\n\n"
-            f"📌 *Назва:* {reminder['title']}\n"
-            f"⏰ *Час:* {time_str}\n"
-            f"🔄 *Повторення:* {repeat_label}",
-            parse_mode="Markdown"
-        )
-        
-        # Send menu
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="Що далі?",
-            reply_markup=menu.get_main_menu()
-        )
-        
-        # Clean up
-        del pending_reminders[user_id]
-        
-    elif action == "ai_cancel":
-        if user_id in pending_reminders:
-            del pending_reminders[user_id]
-        await query.edit_message_text("❌ Створення нагадування скасовано.")
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="Що далі?",
-            reply_markup=menu.get_main_menu()
-        )
-        
-    elif action == "ai_edit_time":
-        await query.edit_message_text(
-            "⏰ Введіть новий час у форматі:\n\n"
-            "`ДД.ММ.РРРР ГГ:ХХ` або `ГГ:ХХ`\n\n"
-            "Наприклад: `25.12.2025 14:30` або `14:30`",
-            parse_mode="Markdown"
-        )
-        # Store state for editing
-        context.user_data["editing_ai_reminder"] = "time"
-        
-    elif action == "ai_edit_repeat":
-        if user_id not in pending_reminders:
-            await query.edit_message_text("❌ Нагадування не знайдено.")
-            return
-            
-        keyboard = [
-            [InlineKeyboardButton(label, callback_data=f"ai_repeat_{key}")]
-            for key, label in REPEAT_OPTIONS.items()
-        ]
-        keyboard.append([InlineKeyboardButton("❌ Скасувати", callback_data="ai_cancel")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            "🔄 Оберіть частоту повторення:",
-            reply_markup=reply_markup
-        )
-
-
-async def handle_ai_repeat_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle repeat type selection for AI reminder."""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    repeat_type = query.data.replace("ai_repeat_", "")
-    
-    if user_id not in pending_reminders:
-        await query.edit_message_text("❌ Нагадування не знайдено.")
-        return
-    
-    # Update repeat type
-    pending_reminders[user_id]["repeat"] = repeat_type
-    
-    # Show updated confirmation
-    reminder = pending_reminders[user_id]
-    time_str = reminder["datetime"].strftime("%d.%m.%Y о %H:%M")
-    repeat_label = REPEAT_OPTIONS.get(repeat_type, "Один раз")
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Створити", callback_data="ai_confirm"),
-            InlineKeyboardButton("❌ Скасувати", callback_data="ai_cancel")
-        ],
-        [
-            InlineKeyboardButton("✏️ Змінити час", callback_data="ai_edit_time"),
-            InlineKeyboardButton("🔄 Змінити повторення", callback_data="ai_edit_repeat")
-        ]
-    ]
+async def handle_unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle unknown text messages."""
+    keyboard = [[InlineKeyboardButton(f"🤖 Відкрити {CHATGPT_BOT}", url="https://t.me/chatgpt_gidbot")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(
-        f"🔔 *Створити нагадування?*\n\n"
-        f"📌 *Назва:* {reminder['title']}\n"
-        f"⏰ *Час:* {time_str}\n"
-        f"🔄 *Повторення:* {repeat_label}",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
+    await update.message.reply_text(
+        f"🤔 Я не розумію це повідомлення.\n\n"
+        f"Використовуйте меню нижче для навігації або {CHATGPT_BOT} для AI-чату.",
+        reply_markup=reply_markup
     )
-
-
-async def handle_ai_time_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle time edit for AI reminder."""
-    if context.user_data.get("editing_ai_reminder") != "time":
-        return False
-    
-    user_id = update.effective_user.id
-    time_text = update.message.text.strip()
-    
-    if user_id not in pending_reminders:
-        await update.message.reply_text("❌ Нагадування не знайдено. Почніть спочатку.")
-        context.user_data.pop("editing_ai_reminder", None)
-        return True
-    
-    try:
-        # Parse time
-        if " " in time_text:
-            reminder_time = datetime.strptime(time_text, "%d.%m.%Y %H:%M")
-        else:
-            time_only = datetime.strptime(time_text, "%H:%M")
-            today = datetime.now()
-            reminder_time = today.replace(
-                hour=time_only.hour,
-                minute=time_only.minute,
-                second=0,
-                microsecond=0
-            )
-            if reminder_time <= datetime.now():
-                reminder_time += timedelta(days=1)
-        
-        if reminder_time <= datetime.now():
-            await update.message.reply_text(
-                "❌ Час повинен бути у майбутньому! Спробуйте ще раз:"
-            )
-            return True
-        
-        # Update time
-        pending_reminders[user_id]["datetime"] = reminder_time
-        context.user_data.pop("editing_ai_reminder", None)
-        
-        # Show updated confirmation
-        reminder = pending_reminders[user_id]
-        time_str = reminder_time.strftime("%d.%m.%Y о %H:%M")
-        repeat_label = REPEAT_OPTIONS.get(reminder["repeat"], "Один раз")
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Створити", callback_data="ai_confirm"),
-                InlineKeyboardButton("❌ Скасувати", callback_data="ai_cancel")
-            ],
-            [
-                InlineKeyboardButton("✏️ Змінити час", callback_data="ai_edit_time"),
-                InlineKeyboardButton("🔄 Змінити повторення", callback_data="ai_edit_repeat")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            f"🔔 *Створити нагадування?*\n\n"
-            f"📌 *Назва:* {reminder['title']}\n"
-            f"⏰ *Час:* {time_str}\n"
-            f"🔄 *Повторення:* {repeat_label}",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-        return True
-        
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Невірний формат часу!\n\n"
-            "Використовуйте: `ДД.ММ.РРРР ГГ:ХХ` або `ГГ:ХХ`",
-            parse_mode="Markdown"
-        )
-        return True
 
 
 async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1009,7 +570,6 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("list", list_reminders))
-    application.add_handler(CommandHandler("clear", clear_chat))
     application.add_handler(CommandHandler("timezone", timezone_command))
     application.add_handler(add_conv_handler)
     application.add_handler(delete_conv_handler)
@@ -1061,16 +621,6 @@ def main():
         pattern="^med_(taken|skip)_"
     ))
     
-    # AI reminder callback handlers
-    application.add_handler(CallbackQueryHandler(
-        handle_ai_reminder_callback, 
-        pattern="^ai_(confirm|cancel|edit_time|edit_repeat)$"
-    ))
-    application.add_handler(CallbackQueryHandler(
-        handle_ai_repeat_selection,
-        pattern="^ai_repeat_"
-    ))
-    
     # Subscription handlers
     application.add_handler(CommandHandler("subscription", sub.subscription_command))
     application.add_handler(CallbackQueryHandler(
@@ -1097,29 +647,21 @@ def main():
         sub.successful_payment_callback
     ))
     
-    # Handler for editing AI reminder time and menu buttons
+    # Handler for menu buttons and unknown messages
     async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Route messages - check menu buttons, time edit, then chat."""
+        """Route messages - check menu buttons first."""
         text = update.message.text
         
-        # Check for menu buttons first
+        # Check for menu buttons
         if text in menu.MENU_COMMANDS:
             handled = await handle_menu_button(update, context)
             if handled:
                 return
-            # If not handled, check if it's a command shortcut
-            action = menu.MENU_COMMANDS.get(text, "")
-            if action.startswith("/"):
-                # Let it fall through to be handled by command handlers
-                # We need to re-trigger command processing
-                return
         
-        # Check for AI reminder time edit
-        handled = await handle_ai_time_edit(update, context)
-        if not handled:
-            await chat_with_gpt(update, context)
+        # Unknown message - show help
+        await handle_unknown_message(update, context)
     
-    # ChatGPT handler for regular messages (must be last)
+    # Message handler (must be last)
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         message_router
