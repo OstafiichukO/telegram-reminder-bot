@@ -20,6 +20,7 @@ from telegram.ext import (
 
 import database as db
 import scheduler
+import mental_health as mh
 
 # Load environment variables
 load_dotenv()
@@ -59,23 +60,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send welcome message when /start is issued."""
     user = update.effective_user
     
-    gpt_status = "✅ Увімкнено" if openai_client else "❌ Не налаштовано"
+    # Initialize user settings
+    db.get_or_create_user_settings(user.id)
+    
+    gpt_status = "✅" if openai_client else "❌"
     
     welcome_text = f"""
 👋 Привіт, {user.first_name}!
 
-Я бот для нагадувань з підтримкою ChatGPT. Ось що я вмію:
+Я ваш персональний асистент для ментального здоров'я та продуктивності.
 
-📝 /add - Створити нове нагадування
-📋 /list - Переглянути всі нагадування
-🗑 /delete - Видалити нагадування
-🧹 /clear - Очистити історію чату з AI
-❓ /help - Допомога
+📝 *Нагадування:*
+/add - Створити нагадування
+/list - Мої нагадування
 
-🤖 *ChatGPT:* {gpt_status}
-Просто напишіть повідомлення, і я відповім!
+💚 *Ментальне здоров'я:*
+/mood - Записати настрій
+/breathe - Дихальні вправи
+/cbt - Когнітивні вправи
+/meds - Нагадування про ліки
 
-Почнімо? Використай /add щоб створити нагадування або просто напиши мені!
+🤖 *AI-асистент:* {gpt_status}
+Просто напишіть, і я допоможу!
+
+❓ /help - Детальна довідка
 """
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -83,34 +91,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show help message."""
     help_text = """
-📚 *Довідка по командах:*
+📚 *Довідка*
 
-/add - Створити нове нагадування
-  1️⃣ Введіть назву нагадування
-  2️⃣ Вкажіть час (формат: ДД.ММ.РРРР ГГ:ХХ)
-  3️⃣ Оберіть частоту повторення
+*📝 Нагадування:*
+/add - Створити нагадування
+/list - Переглянути всі
+/delete - Видалити
+/cancel - Скасувати дію
 
-/list - Показати всі активні нагадування
+*💚 Ментальне здоров'я:*
+/mood - Записати настрій (1-5)
+/moodstats - Статистика настрою
+/breathe - Дихальні вправи
+/cbt - Когнітивні вправи (CBT)
+/meds - Нагадування про ліки
 
-/delete - Видалити нагадування
+*🤖 AI-асистент:*
+Просто напишіть повідомлення!
+Наприклад: "Нагадай завтра о 9 про зустріч"
+/clear - Очистити історію чату
 
-/clear - Очистити історію чату з AI
+*⏰ Формат часу:*
+`25.12.2025 14:30` або `14:30`
 
-/cancel - Скасувати поточну дію
+*🔄 Повторення:*
+Один раз • Щогодини • Щодня • Щотижня • Щомісяця
 
-*Формат часу:*
-`25.12.2025 14:30` - конкретна дата і час
-`14:30` - сьогодні о вказаний час
-
-*Типи повторення:*
-• Один раз - нагадування спрацює лише раз
-• Щогодини - кожну годину
-• Щодня - кожен день
-• Щотижня - кожен тиждень
-• Щомісяця - кожен місяць
-
-🤖 *ChatGPT:*
-Просто напишіть повідомлення (не команду), і я відповім за допомогою AI!
+*💡 Поради:*
+• Записуйте настрій щодня для кращого розуміння себе
+• Використовуйте дихальні вправи при стресі
+• AI може створювати нагадування з контексту
 """
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -780,6 +790,53 @@ def main():
     application.add_handler(CommandHandler("clear", clear_chat))
     application.add_handler(add_conv_handler)
     application.add_handler(delete_conv_handler)
+    
+    # Mental health handlers
+    application.add_handler(CommandHandler("mood", mh.mood_command))
+    application.add_handler(CommandHandler("moodstats", mh.mood_stats_command))
+    application.add_handler(CommandHandler("breathe", mh.breathe_command))
+    application.add_handler(CommandHandler("cbt", mh.cbt_command))
+    application.add_handler(CommandHandler("meds", mh.meds_command))
+    
+    # Mood callback handler
+    application.add_handler(CallbackQueryHandler(
+        mh.handle_mood_selection,
+        pattern="^mood_"
+    ))
+    
+    # Breathing callback handler
+    application.add_handler(CallbackQueryHandler(
+        mh.handle_breathing_selection,
+        pattern="^breathe_"
+    ))
+    
+    # CBT conversation handler
+    cbt_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(mh.handle_cbt_selection, pattern="^cbt_")],
+        states={
+            mh.CBT_EXERCISE: [MessageHandler(filters.TEXT & ~filters.COMMAND, mh.handle_cbt_answer)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    application.add_handler(cbt_conv_handler)
+    
+    # Medications conversation handler
+    meds_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(mh.handle_meds_callback, pattern="^meds_")],
+        states={
+            mh.MED_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, mh.handle_med_name)],
+            mh.MED_DOSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, mh.handle_med_dosage)],
+            mh.MED_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, mh.handle_med_time)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    application.add_handler(meds_conv_handler)
+    
+    # Medication taken/skip handler
+    application.add_handler(CallbackQueryHandler(
+        mh.handle_med_taken,
+        pattern="^med_(taken|skip)_"
+    ))
     
     # AI reminder callback handlers
     application.add_handler(CallbackQueryHandler(
