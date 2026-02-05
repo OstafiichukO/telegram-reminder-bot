@@ -21,6 +21,8 @@ from telegram.ext import (
 import database as db
 import scheduler
 import mental_health as mh
+import subscription as sub
+import menu
 
 # Load environment variables
 load_dotenv()
@@ -43,6 +45,9 @@ chat_history: dict[int, list] = {}
 # Store pending reminders awaiting confirmation
 pending_reminders: dict[int, dict] = {}
 
+# Track daily AI message counts per user (resets daily)
+ai_message_counts: dict[int, dict] = {}  # {user_id: {"date": "2024-01-01", "count": 5}}
+
 # Conversation states
 TITLE, TIME, REPEAT = range(3)
 
@@ -61,31 +66,94 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     # Initialize user settings
-    db.get_or_create_user_settings(user.id)
+    settings = db.get_or_create_user_settings(user.id)
+    is_premium = db.is_premium(user.id)
     
     gpt_status = "✅" if openai_client else "❌"
+    sub_status = "⭐ Premium" if is_premium else "Free"
     
     welcome_text = f"""
 👋 Привіт, {user.first_name}!
 
 Я ваш персональний асистент для ментального здоров'я та продуктивності.
 
-📝 *Нагадування:*
-/add - Створити нагадування
-/list - Мої нагадування
+📊 Ваш план: *{sub_status}*
 
-💚 *Ментальне здоров'я:*
-/mood - Записати настрій
-/breathe - Дихальні вправи
-/cbt - Когнітивні вправи
-/meds - Нагадування про ліки
+*Використовуйте меню нижче* для швидкого доступу до функцій або просто напишіть мені!
 
-🤖 *AI-асистент:* {gpt_status}
-Просто напишіть, і я допоможу!
+🤖 AI-асистент: {gpt_status}
 
-❓ /help - Детальна довідка
+Напишіть "нагадай мені..." і я створю нагадування автоматично!
 """
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    await update.message.reply_text(
+        welcome_text, 
+        parse_mode="Markdown",
+        reply_markup=menu.get_main_menu()
+    )
+
+
+async def handle_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle menu button presses."""
+    text = update.message.text
+    
+    if text not in menu.MENU_COMMANDS:
+        return False  # Not a menu button
+    
+    action = menu.MENU_COMMANDS[text]
+    
+    # Handle submenu navigation
+    if action == "menu_reminders":
+        await update.message.reply_text(
+            "📝 *Нагадування*\n\nОберіть дію:",
+            parse_mode="Markdown",
+            reply_markup=menu.get_reminders_menu()
+        )
+        return True
+    
+    elif action == "menu_health":
+        await update.message.reply_text(
+            "💚 *Ментальне здоров'я*\n\nОберіть функцію:",
+            parse_mode="Markdown",
+            reply_markup=menu.get_health_menu()
+        )
+        return True
+    
+    elif action == "menu_settings":
+        await update.message.reply_text(
+            "⚙️ *Налаштування*\n\nОберіть опцію:",
+            parse_mode="Markdown",
+            reply_markup=menu.get_settings_menu()
+        )
+        return True
+    
+    elif action == "menu_main":
+        await update.message.reply_text(
+            "🏠 *Головне меню*",
+            parse_mode="Markdown",
+            reply_markup=menu.get_main_menu()
+        )
+        return True
+    
+    elif action == "menu_ai":
+        await update.message.reply_text(
+            "🤖 *AI Чат*\n\n"
+            "Просто напишіть мені що завгодно!\n\n"
+            "Наприклад:\n"
+            "• «Нагадай завтра о 9 про зустріч»\n"
+            "• «Як покращити сон?»\n"
+            "• «Порадь дихальну вправу»",
+            parse_mode="Markdown",
+            reply_markup=menu.get_main_menu()
+        )
+        return True
+    
+    # Handle command shortcuts
+    elif action.startswith("/"):
+        # Simulate command by updating the message text
+        update.message.text = action
+        return False  # Let the command handler process it
+    
+    return False
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,7 +190,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Використовуйте дихальні вправи при стресі
 • AI може створювати нагадування з контексту
 """
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    await update.message.reply_text(
+        help_text, 
+        parse_mode="Markdown",
+        reply_markup=menu.get_main_menu()
+    )
 
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -131,6 +203,49 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in chat_history:
         chat_history[user_id] = []
     await update.message.reply_text("🗑 Історію чату очищено!")
+
+
+def check_ai_limit(user_id: int) -> tuple[bool, str]:
+    """Check if user can send AI message."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Get or create user's counter
+    if user_id not in ai_message_counts:
+        ai_message_counts[user_id] = {"date": today, "count": 0}
+    
+    user_counter = ai_message_counts[user_id]
+    
+    # Reset if new day
+    if user_counter["date"] != today:
+        user_counter["date"] = today
+        user_counter["count"] = 0
+    
+    # Check limit
+    limits = db.get_user_limits(user_id)
+    limit = limits.get("ai_messages_per_day", 10)
+    
+    if user_counter["count"] >= limit:
+        return False, (
+            f"⚠️ *Ліміт AI-повідомлень вичерпано!*\n\n"
+            f"Використано: {user_counter['count']}/{limit} на сьогодні\n\n"
+            f"⭐ Оновіть до Premium для безлімітного AI!\n"
+            f"Використайте /subscription"
+        )
+    
+    return True, ""
+
+
+def increment_ai_count(user_id: int):
+    """Increment AI message count for user."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    if user_id not in ai_message_counts:
+        ai_message_counts[user_id] = {"date": today, "count": 0}
+    
+    if ai_message_counts[user_id]["date"] != today:
+        ai_message_counts[user_id] = {"date": today, "count": 0}
+    
+    ai_message_counts[user_id]["count"] += 1
 
 
 async def chat_with_gpt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,6 +258,12 @@ async def chat_with_gpt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     user_message = update.message.text
+    
+    # Check AI message limit
+    allowed, limit_msg = check_ai_limit(user_id)
+    if not allowed:
+        await update.message.reply_text(limit_msg, parse_mode="Markdown")
+        return
     
     # Initialize history for new users
     if user_id not in chat_history:
@@ -290,6 +411,9 @@ async def chat_with_gpt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "role": "assistant",
             "content": assistant_message
         })
+        
+        # Increment AI message count
+        increment_ai_count(user_id)
         
         await update.message.reply_text(assistant_message)
         
@@ -494,8 +618,27 @@ async def handle_ai_time_edit(update: Update, context: ContextTypes.DEFAULT_TYPE
         return True
 
 
+async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show timezone settings (placeholder)."""
+    await update.message.reply_text(
+        "🌍 *Часовий пояс*\n\n"
+        "Поточний: Europe/Kyiv (UTC+2)\n\n"
+        "_Функція зміни часового поясу буде доступна незабаром._",
+        parse_mode="Markdown",
+        reply_markup=menu.get_main_menu()
+    )
+
+
 async def add_reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start the add reminder conversation."""
+    user_id = update.effective_user.id
+    
+    # Check reminder limit
+    allowed, limit_msg = sub.check_limit(user_id, "reminders")
+    if not allowed:
+        await update.message.reply_text(limit_msg, parse_mode="Markdown")
+        return ConversationHandler.END
+    
     await update.message.reply_text(
         "📝 *Створення нагадування*\n\n"
         "Введіть назву нагадування:",
@@ -788,6 +931,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("list", list_reminders))
     application.add_handler(CommandHandler("clear", clear_chat))
+    application.add_handler(CommandHandler("timezone", timezone_command))
     application.add_handler(add_conv_handler)
     application.add_handler(delete_conv_handler)
     
@@ -848,9 +992,50 @@ def main():
         pattern="^ai_repeat_"
     ))
     
-    # Handler for editing AI reminder time (check before general chat)
+    # Subscription handlers
+    application.add_handler(CommandHandler("subscription", sub.subscription_command))
+    application.add_handler(CallbackQueryHandler(
+        sub.handle_subscription_callback,
+        pattern="^sub_"
+    ))
+    application.add_handler(CallbackQueryHandler(
+        sub.handle_payment_callback,
+        pattern="^pay_"
+    ))
+    
+    # Admin handlers
+    application.add_handler(CommandHandler("admin", sub.admin_command))
+    application.add_handler(CommandHandler("grant", sub.grant_premium_command))
+    application.add_handler(CommandHandler("revoke", sub.revoke_premium_command))
+    application.add_handler(CommandHandler("users", sub.users_command))
+    application.add_handler(CommandHandler("broadcast", sub.broadcast_command))
+    
+    # Payment handlers
+    from telegram.ext import PreCheckoutQueryHandler
+    application.add_handler(PreCheckoutQueryHandler(sub.precheckout_callback))
+    application.add_handler(MessageHandler(
+        filters.SUCCESSFUL_PAYMENT,
+        sub.successful_payment_callback
+    ))
+    
+    # Handler for editing AI reminder time and menu buttons
     async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Route messages - check for time edit first, then chat."""
+        """Route messages - check menu buttons, time edit, then chat."""
+        text = update.message.text
+        
+        # Check for menu buttons first
+        if text in menu.MENU_COMMANDS:
+            handled = await handle_menu_button(update, context)
+            if handled:
+                return
+            # If not handled, check if it's a command shortcut
+            action = menu.MENU_COMMANDS.get(text, "")
+            if action.startswith("/"):
+                # Let it fall through to be handled by command handlers
+                # We need to re-trigger command processing
+                return
+        
+        # Check for AI reminder time edit
         handled = await handle_ai_time_edit(update, context)
         if not handled:
             await chat_with_gpt(update, context)

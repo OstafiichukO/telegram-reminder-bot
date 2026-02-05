@@ -6,6 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
 import database as db
+import subscription as sub
 
 # Mood emojis with scores
 MOOD_OPTIONS = {
@@ -92,6 +93,14 @@ CBT_EXERCISE = range(200, 201)[0]
 
 async def mood_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start mood tracking."""
+    user_id = update.effective_user.id
+    
+    # Check mood limit
+    allowed, limit_msg = sub.check_limit(user_id, "mood_per_day")
+    if not allowed:
+        await update.message.reply_text(limit_msg, parse_mode="Markdown")
+        return
+    
     keyboard = [
         [InlineKeyboardButton(f"{emoji} {data['label']}", callback_data=f"mood_{emoji}")]
         for emoji, data in MOOD_OPTIONS.items()
@@ -414,6 +423,14 @@ async def handle_meds_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = query.from_user.id
     
     if action == "add":
+        user_id = query.from_user.id
+        
+        # Check medication limit
+        allowed, limit_msg = sub.check_limit(user_id, "medications")
+        if not allowed:
+            await query.edit_message_text(limit_msg, parse_mode="Markdown")
+            return ConversationHandler.END
+        
         await query.edit_message_text(
             "💊 *Додавання ліків*\n\n"
             "Введіть назву препарату:",

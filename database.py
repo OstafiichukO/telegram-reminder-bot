@@ -273,7 +273,26 @@ def get_medication_adherence(user_id: int, days: int = 7) -> dict:
     return stats
 
 
-# ============ USER SETTINGS ============
+# ============ USER SETTINGS & SUBSCRIPTIONS ============
+
+# Subscription limits
+SUBSCRIPTION_LIMITS = {
+    "free": {
+        "reminders": 5,
+        "medications": 2,
+        "mood_per_day": 3,
+        "ai_messages_per_day": 10,
+        "cbt_per_day": 2,
+    },
+    "premium": {
+        "reminders": 999999,
+        "medications": 999999,
+        "mood_per_day": 999999,
+        "ai_messages_per_day": 999999,
+        "cbt_per_day": 999999,
+    }
+}
+
 
 def get_or_create_user_settings(user_id: int) -> dict:
     """Get or create user settings."""
@@ -304,6 +323,135 @@ def get_or_create_user_settings(user_id: int) -> dict:
         "subscription_type": result[2],
         "subscription_expires": result[3]
     }
+
+
+def set_subscription(user_id: int, sub_type: str, expires: str = None) -> bool:
+    """Set user subscription type."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Ensure user exists
+    get_or_create_user_settings(user_id)
+    
+    cursor.execute("""
+        UPDATE user_settings
+        SET subscription_type = ?, subscription_expires = ?
+        WHERE user_id = ?
+    """, (sub_type, expires, user_id))
+    
+    conn.commit()
+    conn.close()
+    return True
+
+
+def is_premium(user_id: int) -> bool:
+    """Check if user has premium subscription."""
+    settings = get_or_create_user_settings(user_id)
+    
+    if settings["subscription_type"] == "free":
+        return False
+    
+    # Check if subscription expired
+    if settings["subscription_expires"]:
+        expires = datetime.fromisoformat(settings["subscription_expires"])
+        if expires < datetime.now():
+            # Subscription expired, downgrade to free
+            set_subscription(user_id, "free", None)
+            return False
+    
+    return True
+
+
+def get_user_limits(user_id: int) -> dict:
+    """Get user's current limits based on subscription."""
+    if is_premium(user_id):
+        return SUBSCRIPTION_LIMITS["premium"]
+    return SUBSCRIPTION_LIMITS["free"]
+
+
+def count_user_reminders(user_id: int) -> int:
+    """Count user's active reminders."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT COUNT(*) FROM reminders
+        WHERE user_id = ? AND is_active = 1
+    """, (user_id,))
+    
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def count_user_medications(user_id: int) -> int:
+    """Count user's active medications."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT COUNT(*) FROM medications
+        WHERE user_id = ? AND is_active = 1
+    """, (user_id,))
+    
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def count_today_mood_entries(user_id: int) -> int:
+    """Count user's mood entries for today."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    cursor.execute("""
+        SELECT COUNT(*) FROM mood_entries
+        WHERE user_id = ? AND DATE(created_at) = ?
+    """, (user_id, today))
+    
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def count_today_ai_messages(user_id: int) -> int:
+    """Count user's AI messages for today (stored in memory, this is a placeholder)."""
+    # This will be tracked in memory in bot.py
+    return 0
+
+
+def get_all_users() -> List[tuple]:
+    """Get all users with their settings."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT user_id, timezone, language, subscription_type, subscription_expires
+        FROM user_settings
+        ORDER BY created_at DESC
+    """)
+    
+    users = cursor.fetchall()
+    conn.close()
+    return users
+
+
+def get_premium_users() -> List[tuple]:
+    """Get all premium users."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT user_id, subscription_type, subscription_expires
+        FROM user_settings
+        WHERE subscription_type != 'free'
+    """)
+    
+    users = cursor.fetchall()
+    conn.close()
+    return users
 
 
 def add_reminder(
