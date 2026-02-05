@@ -1,7 +1,9 @@
 import os
 import logging
 from datetime import datetime
+from threading import Thread
 from dotenv import load_dotenv
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -317,6 +319,27 @@ async def delete_reminder_confirm(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple health check handler for Render."""
+    
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+    
+    def log_message(self, format, *args):
+        pass  # Suppress logs
+
+
+def run_health_server():
+    """Run a simple HTTP server for health checks."""
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    logger.info(f"Health check server running on port {port}")
+    server.serve_forever()
+
+
 def main():
     """Start the bot."""
     token = os.getenv("BOT_TOKEN")
@@ -357,6 +380,10 @@ def main():
     application.add_handler(CommandHandler("list", list_reminders))
     application.add_handler(add_conv_handler)
     application.add_handler(delete_conv_handler)
+    
+    # Start health check server in a separate thread
+    health_thread = Thread(target=run_health_server, daemon=True)
+    health_thread.start()
     
     # Start scheduler
     scheduler.start_scheduler()

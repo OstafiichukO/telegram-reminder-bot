@@ -1,6 +1,6 @@
 # Render Blueprint specification
 services:
-  - type: worker
+  - type: web
     name: telegram-reminder-bot
     runtime: docker
     plan: free
